@@ -15,6 +15,8 @@ var db *sql.DB
 var defaultTxOptions *sql.TxOptions = &sql.TxOptions{
 	Isolation: sql.LevelSerializable,
 }
+
+// Error returned if some field of a struct is not addressable.
 var FieldNotAddressableErr = errors.New("field not addressable")
 
 // Set the database to use.
@@ -32,10 +34,12 @@ func NewTx(c ctx.Context) (*sql.Tx, error) {
 	return db.BeginTx(c, defaultTxOptions)
 }
 
+// Execute SQL statements in query q.
 func Exec(c ctx.Context, q string, a ...any) (sql.Result, error) {
 	return ExecTx(c, nil, q, a...)
 }
 
+// Transaction version of Exec.
 func ExecTx(c ctx.Context, t *sql.Tx, q string, a ...any) (sql.Result, error) {
 	if t != nil {
 		return t.ExecContext(c, q, a...)
@@ -43,10 +47,14 @@ func ExecTx(c ctx.Context, t *sql.Tx, q string, a ...any) (sql.Result, error) {
 	return db.ExecContext(c, q, a...)
 }
 
+// Get the first row mapped to type T from query q. If the query
+// returns more than one row only the first row is mapped and the
+// remaining rows are ignored.
 func One[T any](c ctx.Context, q string, a ...any) (T, error) {
 	return OneTx[T](c, nil, q, a...)
 }
 
+// Transaction version of One.
 func OneTx[T any](c ctx.Context, t *sql.Tx, q string, a ...any) (T, error) {
 	var obj T
 	objs, err := qtx[T](c, t, true, q, a...)
@@ -58,10 +66,12 @@ func OneTx[T any](c ctx.Context, t *sql.Tx, q string, a ...any) (T, error) {
 	return obj, sql.ErrNoRows
 }
 
+// Get zero or more rows mapped to a slice of type T from query q.
 func Query[T any](c ctx.Context, q string, a ...any) ([]T, error) {
 	return qtx[T](c, nil, false, q, a...)
 }
 
+// Transaction version of Query.
 func QueryTx[T any](c ctx.Context, t *sql.Tx, q string, a ...any) ([]T, error) {
 	return qtx[T](c, t, false, q, a...)
 }
@@ -83,17 +93,23 @@ func qtx[T any](c ctx.Context, t *sql.Tx, tr bool, q string, a ...any) ([]T, err
 	if err != nil {
 		return objs, err
 	}
-	types := make([]any, len(cols))
-	for i, t := range cols {
-		types[i] = t.ScanType()
-	}
+	// ATTN: we don't actually use the types, do we need them
+	// here?
+	// types := make([]any, len(cols))
+	// for i, t := range cols {
+	// 	types[i] = t.ScanType()
+	// }
 	for rows.Next() {
 		var obj T
 		ptrs := make([]any, len(cols))
 		for i, col := range cols {
 			name := col.Name()
 			// TODO: name conversion hook
+
+			// TODO: should return a possible error?
 			ip := IndexPath[T](name)
+
+			// get a pointer to the named field of obj
 			st := reflect.ValueOf(&obj).Elem()
 			field, err := st.FieldByIndexErr(ip)
 			if err != nil {
@@ -103,8 +119,14 @@ func qtx[T any](c ctx.Context, t *sql.Tx, tr bool, q string, a ...any) ([]T, err
 				return objs, FieldNotAddressableErr
 			}
 			ptr := field.Addr().UnsafePointer()
+
+			// get the type of the named field as declared
+			// in T
 			f := reflect.TypeOf(obj).FieldByIndex(ip)
 			t := f.Type
+
+			// add the typed pointer to our slice of
+			// pointers
 			switch t.String() {
 			case "[]byte", "[]uint8":
 				ptrs[i] = (*[]byte)(ptr)
